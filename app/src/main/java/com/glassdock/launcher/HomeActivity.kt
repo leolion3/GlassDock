@@ -13,13 +13,20 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import java.util.concurrent.Executors
-import android.widget.HorizontalScrollView
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Shader
 
 class HomeActivity : Activity() {
 
@@ -258,9 +265,10 @@ class HomeActivity : Activity() {
 
     private fun buildHeroColumn(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
+        translationZ = dp(12).toFloat()
         layoutParams =
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(32)
+                marginEnd = dp(24)
             }
         heroTag = TextView(context).apply {
             textSize = 11f
@@ -290,39 +298,46 @@ class HomeActivity : Activity() {
 
     private fun buildQuickJumpRow(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
+        translationZ = 0f
         clipChildren = false
         clipToPadding = false
         layoutParams = LinearLayout.LayoutParams(
             0,
             LinearLayout.LayoutParams.WRAP_CONTENT,
-            1.9f
+            2.05f
         )
 
         addView(TextView(context).apply {
             text = "Quick jump"
             textSize = 13f
             setTextColor(Color.parseColor("#6E7C8E"))
-            setPadding(dp(8), 0, 0, dp(4))
+            setPadding(dp(15), 0, 0, dp(2))
         })
 
         addView(buildQuickJumpScroller())
     }
 
-    private fun buildQuickJumpScroller(): HorizontalScrollView = HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        isSmoothScrollingEnabled = true
-        overScrollMode = View.OVER_SCROLL_NEVER
-        clipChildren = false
-        clipToPadding = false
-        setPadding(dp(4), dp(10), dp(12), dp(10))
-
-        quickJumpAppsRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
+    private fun buildQuickJumpScroller(): HorizontalScrollView =
+        LeftFadeScrollView(
+            context = this,
+            fadeWidthPx = dp(64),
+            verticalPadPx = dp(24),
+            rightOverdrawPx = dp(160)
+        ).apply {
+            isHorizontalScrollBarEnabled = false
+            isSmoothScrollingEnabled = true
+            overScrollMode = View.OVER_SCROLL_NEVER
             clipChildren = false
             clipToPadding = false
+            setPadding(dp(8), dp(14), dp(8), dp(14))
+
+            quickJumpAppsRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            addView(quickJumpAppsRow)
         }
-        addView(quickJumpAppsRow)
-    }
 
     private fun buildPosterCard(app: AppSpec): FrameLayout = FrameLayout(this).apply {
         layoutParams =
@@ -410,24 +425,6 @@ class HomeActivity : Activity() {
             })
     }
 
-    private fun buildDockTile(app: AppSpec): FrameLayout = FrameLayout(this).apply {
-        layoutParams =
-            LinearLayout.LayoutParams(dp(58), dp(58)).apply { setMargins(dp(7), 0, dp(7), 0) }
-        isFocusable = true
-        isFocusableInTouchMode = true
-        background = UiTheme.iconTile(context, app.tileTopHex, app.tileBottomHex)
-        clipToOutline = true
-        addView(AppIconView(context, app.id, app.label))
-
-        setOnFocusChangeListener { v, focused ->
-            v.animateFocus(focused, 1.15f)
-            v.background =
-                UiTheme.iconTile(context, app.tileTopHex, app.tileBottomHex, focused = focused)
-            if (focused) updateHero(app.category.uppercase(), app.label, app.tagline, app.accentHex)
-        }
-        setOnClickListener { AppCatalog.launch(context, app) }
-    }
-
     private fun buildUtilityButton(
         iconType: String,
         title: String,
@@ -457,5 +454,46 @@ class HomeActivity : Activity() {
         val color = Color.parseColor(accentHex)
         heroTag.setTextColor(color)
         heroAccentBar.setBackgroundColor(color)
+    }
+
+    private class LeftFadeScrollView(
+        context: Context,
+        private val fadeWidthPx: Int,
+        private val verticalPadPx: Int,
+        private val rightOverdrawPx: Int
+    ) : HorizontalScrollView(context) {
+
+        private val fadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+            shader = LinearGradient(
+                0f, 0f, fadeWidthPx.toFloat(), 0f,
+                Color.BLACK, Color.TRANSPARENT,
+                Shader.TileMode.CLAMP
+            )
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            if (scrollX <= 0 || fadeWidthPx <= 0) {
+                super.dispatchDraw(canvas)
+                return
+            }
+
+            val fadeStart = scrollX.toFloat()
+            val effectiveFadeWidth = minOf(scrollX, fadeWidthPx).toFloat()
+            val top = -verticalPadPx.toFloat()
+            val bottom = (height + verticalPadPx).toFloat()
+            val right = (scrollX + width + rightOverdrawPx).toFloat()
+
+            val saveCount = canvas.saveLayer(fadeStart, top, right, bottom, null)
+            super.dispatchDraw(canvas)
+
+            canvas.save()
+            canvas.translate(fadeStart, 0f)
+            canvas.scale(effectiveFadeWidth / fadeWidthPx.toFloat(), 1f)
+            canvas.drawRect(0f, top, fadeWidthPx.toFloat(), bottom, fadePaint)
+            canvas.restore()
+
+            canvas.restoreToCount(saveCount)
+        }
     }
 }
