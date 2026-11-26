@@ -1,10 +1,14 @@
 package com.glassdock.launcher
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -12,8 +16,10 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
-import android.os.Handler
-import android.os.Looper
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
+import java.util.concurrent.Executors
+import android.widget.HorizontalScrollView
 
 class HomeActivity : Activity() {
 
@@ -22,30 +28,42 @@ class HomeActivity : Activity() {
     private lateinit var heroSub: TextView
     private lateinit var heroAccentBar: View
     private lateinit var weatherText: TextView
-    private val idleHandler = Handler(Looper.getMainLooper())
+    private lateinit var quickJumpAppsRow: LinearLayout
+    private lateinit var dockAppsContainer: LinearLayout
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val catalogExecutor = Executors.newSingleThreadExecutor()
+    private var renderedPinnedKeys: List<String> = emptyList()
+    private var backInvokedCallback: Any? = null
+
     private val startScreensaver = Runnable {
         startActivity(Intent(this, ScreensaverActivity::class.java))
-    }
-
-    private fun resetIdleTimer() {
-        idleHandler.removeCallbacks(startScreensaver)
-        idleHandler.postDelayed(startScreensaver, 180_000L) // 3 minutes
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildRoot())
+        registerBackInterceptor()
+        applyPinnedApps(FavoritesStore.resolvePinnedApps(this, AppCatalog.coreLibraryApps))
         WeatherClient.fetchAsync { weatherText.text = it }
     }
 
     override fun onResume() {
         super.onResume()
         resetIdleTimer()
+        refreshPinnedAppsAsync()
     }
 
     override fun onPause() {
-        idleHandler.removeCallbacks(startScreensaver)
+        mainHandler.removeCallbacks(startScreensaver)
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        unregisterBackInterceptor()
+        mainHandler.removeCallbacks(startScreensaver)
+        catalogExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -53,8 +71,31 @@ class HomeActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun registerBackInterceptor() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = OnBackInvokedCallback { /* Intentionally consume Back on Home screen */ }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            callback
+        )
+        backInvokedCallback = callback
+    }
+
+    private fun unregisterBackInterceptor() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val callback = backInvokedCallback as? OnBackInvokedCallback ?: return
+        onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback)
+        backInvokedCallback = null
+    }
+
+    @Deprecated("Fallback for API < 33 (Fire OS 8); API 33+ uses OnBackInvokedDispatcher")
+    @Suppress("DEPRECATION")
+    @SuppressLint("GestureBackNavigation")
+    override fun onBackPressed() {
+        // Intentionally consume Back on API < 33 so the launcher does not exit
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
-        KeyEvent.KEYCODE_BACK -> true
         KeyEvent.KEYCODE_MENU -> {
             startActivity(Intent(this, SettingsHubActivity::class.java))
             true
@@ -67,6 +108,87 @@ class HomeActivity : Activity() {
 
         else -> super.onKeyDown(keyCode, event)
     }
+
+    private fun resetIdleTimer() {
+        mainHandler.removeCallbacks(startScreensaver)
+        mainHandler.postDelayed(startScreensaver, 180_000L)
+    }
+
+    private fun refreshPinnedAppsAsync() {
+        catalogExecutor.execute {
+            val allApps = loadAllAvailableApps()
+            val pinned = FavoritesStore.resolvePinnedApps(this, allApps)
+            postPinnedAppsUpdate(pinned)
+        }
+    }
+
+    private fun postPinnedAppsUpdate(pinned: List<AppSpec>) {
+        mainHandler.post {
+            if (!isFinishing && !isDestroyed) {
+                applyPinnedApps(pinned)
+            }
+        }
+    }
+
+    private fun loadAllAvailableApps(): List<AppSpec> {
+        val excluded = AppCatalog.coreLibraryApps.flatMap { it.packages }.toSet() + packageName
+        val (promotedExtras, otherApps) = AppCatalog.queryInstalledApps(packageManager, excluded)
+        return AppCatalog.coreLibraryApps + promotedExtras + otherApps
+    }
+
+    private fun applyPinnedApps(pinnedApps: List<AppSpec>) {
+        val newKeys = pinnedApps.map(FavoritesStore::keyFor)
+        if (newKeys == renderedPinnedKeys) return
+
+        renderedPinnedKeys = newKeys
+        rebuildQuickJump(pinnedApps)
+        rebuildDockApps(pinnedApps)
+    }
+
+    private fun rebuildQuickJump(pinnedApps: List<AppSpec>) {
+        quickJumpAppsRow.removeAllViews()
+        pinnedApps.forEach { quickJumpAppsRow.addView(buildPosterCard(it)) }
+    }
+
+    private fun rebuildDockApps(pinnedApps: List<AppSpec>) {
+        val compact = pinnedApps.size > 6
+        dockAppsContainer.removeAllViews()
+        pinnedApps.forEachIndexed { idx, app ->
+            val tile = buildDockTile(app, compact)
+            dockAppsContainer.addView(tile)
+            if (idx == 0) {
+                tile.requestFocus()
+                updateHero(app.category.uppercase(), app.label, app.tagline, app.accentHex)
+            }
+        }
+    }
+
+    private fun buildDockTile(app: AppSpec, compact: Boolean): FrameLayout =
+        FrameLayout(this).apply {
+            val tileSize = dp(if (compact) 50 else 58)
+            val margin = dp(if (compact) 5 else 7)
+            layoutParams = LinearLayout.LayoutParams(tileSize, tileSize).apply {
+                setMargins(margin, 0, margin, 0)
+            }
+            isFocusable = true
+            isFocusableInTouchMode = true
+            background = UiTheme.iconTile(context, app.tileTopHex, app.tileBottomHex)
+            clipToOutline = true
+            addView(AppIconView(context, app.id, app.label))
+
+            setOnFocusChangeListener { v, focused ->
+                v.animateFocus(focused, 1.15f)
+                v.background =
+                    UiTheme.iconTile(context, app.tileTopHex, app.tileBottomHex, focused = focused)
+                if (focused) updateHero(
+                    app.category.uppercase(),
+                    app.label,
+                    app.tagline,
+                    app.accentHex
+                )
+            }
+            setOnClickListener { AppCatalog.launch(context, app) }
+        }
 
     private fun buildRoot(): FrameLayout = FrameLayout(this).apply {
         background = UiTheme.backdrop()
@@ -170,21 +292,36 @@ class HomeActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         clipChildren = false
         clipToPadding = false
+        layoutParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1.9f
+        )
 
         addView(TextView(context).apply {
             text = "Quick jump"
             textSize = 13f
             setTextColor(Color.parseColor("#6E7C8E"))
-            setPadding(dp(8), 0, 0, dp(10))
+            setPadding(dp(8), 0, 0, dp(4))
         })
 
-        val row = LinearLayout(context).apply {
+        addView(buildQuickJumpScroller())
+    }
+
+    private fun buildQuickJumpScroller(): HorizontalScrollView = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        isSmoothScrollingEnabled = true
+        overScrollMode = View.OVER_SCROLL_NEVER
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(4), dp(10), dp(12), dp(10))
+
+        quickJumpAppsRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             clipChildren = false
             clipToPadding = false
         }
-        AppCatalog.dockApps.forEach { row.addView(buildPosterCard(it)) }
-        addView(row)
+        addView(quickJumpAppsRow)
     }
 
     private fun buildPosterCard(app: AppSpec): FrameLayout = FrameLayout(this).apply {
@@ -239,14 +376,13 @@ class HomeActivity : Activity() {
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         )
 
-        AppCatalog.dockApps.forEachIndexed { idx, app ->
-            val tile = buildDockTile(app)
-            addView(tile)
-            if (idx == 0) {
-                tile.requestFocus()
-                updateHero(app.category.uppercase(), app.label, app.tagline, app.accentHex)
-            }
+        dockAppsContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
         }
+        addView(dockAppsContainer)
 
         addView(View(context).apply {
             layoutParams =
@@ -268,7 +404,7 @@ class HomeActivity : Activity() {
                 "settings",
                 "Settings",
                 "SYSTEM",
-                "Wi-Fi, Display, Apps & Fire TV settings"
+                "Wi-Fi, Display, Apps & TV settings"
             ) {
                 startActivity(Intent(context, SettingsHubActivity::class.java))
             })

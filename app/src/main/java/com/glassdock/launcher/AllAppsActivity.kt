@@ -12,6 +12,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.text.TextUtils
+import android.view.KeyEvent
+import android.widget.Toast
 
 class AllAppsActivity : Activity() {
 
@@ -86,7 +88,7 @@ class AllAppsActivity : Activity() {
         })
 
         addView(TextView(context).apply {
-            text = "Back to return"
+            text = "Hold Select or press Menu to pin  ·  Back to return"
             textSize = 13f
             setTextColor(Color.parseColor("#6E7C8E"))
             layoutParams = FrameLayout.LayoutParams(
@@ -144,14 +146,67 @@ class AllAppsActivity : Activity() {
             })
         }
 
+        val starBadge = buildStarBadge(app)
+
         addView(iconBox)
         addView(textCol)
+        addView(starBadge)
 
         setOnFocusChangeListener { v, focused ->
             v.animateFocus(focused, 1.05f)
             v.background = UiTheme.glassCard(context, app.accentHex, focused)
         }
         setOnClickListener { AppCatalog.launch(context, app) }
+        bindPinControls(this, app, starBadge)
+    }
+
+    private fun buildStarBadge(app: AppSpec): TextView = TextView(this).apply {
+        text = if (FavoritesStore.isFavorite(this@AllAppsActivity, app)) "★" else ""
+        textSize = 15f
+        setTextColor(Color.parseColor("#38BDF8"))
+        setPadding(dp(6), 0, 0, 0)
+    }
+
+    private fun bindPinControls(card: View, app: AppSpec, starBadge: TextView) {
+        card.setOnLongClickListener {
+            toggleAppFavorite(app, starBadge)
+            true
+        }
+        card.setOnKeyListener { _, keyCode, event ->
+            handlePinKeyEvent(event, keyCode, app, starBadge)
+        }
+    }
+
+    private fun handlePinKeyEvent(
+        event: KeyEvent,
+        keyCode: Int,
+        app: AppSpec,
+        starBadge: TextView
+    ): Boolean {
+        if (event.action != KeyEvent.ACTION_DOWN || keyCode != KeyEvent.KEYCODE_MENU) {
+            return false
+        }
+        toggleAppFavorite(app, starBadge)
+        return true
+    }
+
+    private fun toggleAppFavorite(app: AppSpec, starBadge: TextView) {
+        val message = when (FavoritesStore.toggleFavorite(this, app)) {
+            FavoriteToggleResult.PINNED -> {
+                starBadge.text = "★"
+                "Pinned ${app.label} to Home"
+            }
+
+            FavoriteToggleResult.UNPINNED -> {
+                starBadge.text = ""
+                "Removed ${app.label} from Home"
+            }
+
+            FavoriteToggleResult.LIMIT_REACHED -> {
+                "Max ${FavoritesStore.MAX_FAVORITES} pinned apps — unpin one first"
+            }
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     private fun buildToggleButton(count: Int, targetGrid: GridLayout): TextView =
