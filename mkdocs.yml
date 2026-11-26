@@ -1,0 +1,43 @@
+site_name: Glass Dock
+site_description: A clean, debloated, modern custom launcher for Fire TV Stick.
+repo_url: https://github.com/leolion3/GlassDock
+repo_name: GlassDock
+copyright: 'Built by <a href="https://leonardhaddad.com" target="_blank" rel="noopener">Leonard Haddad</a> — <a href="https://leonardhaddad.com" target="_blank" rel="noopener">More Projects</a>'
+
+plugins: []
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: custom
+    accent: light blue
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - content.code.copy
+    - navigation.instant
+    - navigation.top
+    - toc.integrate
+
+extra:
+  social:
+    - icon: fontawesome/solid/globe
+      link: https://leonardhaddad.com
+      name: More Projects by Leonard Haddad
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/lightbox.js
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
